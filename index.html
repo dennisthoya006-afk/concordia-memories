@@ -313,6 +313,8 @@ footer h2{color:var(--ink-g)}
 #toast.show{transform:translate(-50%,0)}
 .shake{animation:shake .4s;border-color:#c0562a!important}
 @keyframes shake{20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+.modeline{font-size:.78rem;color:var(--muted-g);margin:-4px 0 10px}
+.react.bump{animation:bump .4s}
 .empty{grid-column:1/-1;text-align:center;color:var(--muted-g);padding:30px}
 </style>
 </head>
@@ -336,7 +338,7 @@ footer h2{color:var(--ink-g)}
       <div class="eyebrow">Vikwatani · Mombasa · Kenya</div>
       <h1>Eleven Stars.<span>One Concordia.</span></h1>
       <div class="typed"><b id="typed"></b></div>
-      <p class="lead" style="margin-bottom:28px">In 2026, Concordia Secondary School sent eleven brilliant students to university. This page is for you, so you never forget where the journey began.</p>
+      <p class="lead" style="margin-bottom:28px">In 2025, Concordia Secondary School sent eleven brilliant students to university. This page is for you, so you never forget where the journey began.</p>
       <div class="btns">
         <a class="btn" href="#gallery">See the Photos</a>
         <button class="btn ghost" id="confetti">🎉 Celebrate</button>
@@ -344,7 +346,7 @@ footer h2{color:var(--ink-g)}
     </div>
     <div class="hero-photo">
       <div class="frame"><img data-src="photo-10.jpg" alt="The graduates with their gifts and school staff"></div>
-      <div class="badge"><div>CLASS OF<br>2025</div></div>
+      <div class="badge"><div><strong>11</strong>CLASS OF<br>2025</div></div>
     </div>
   </div>
   <div class="scroll-hint">SCROLL ↓</div>
@@ -406,7 +408,7 @@ footer h2{color:var(--ink-g)}
   <div class="wrap">
     <div class="eyebrow reveal">Message Wall</div>
     <h2 class="title reveal">Leave a <em>memory</em></h2>
-    <p class="lead reveal">Pin your favourite Concordia moment. React to others' memories with a 💚 — the wall updates instantly.</p>
+    <p class="lead reveal">Pin your favourite Concordia moment and react to others' memories with a 💚. New memories appear on the wall as they are pinned.</p>
     <div class="wall">
       <div class="composer">
         <form id="form" autocomplete="off" novalidate onsubmit="return false">
@@ -448,6 +450,7 @@ footer h2{color:var(--ink-g)}
             <button data-s="top">Most loved</button>
           </div>
         </div>
+        <p class="modeline" id="mode"></p>
         <div class="notes" id="notes"></div>
       </div>
     </div>
@@ -584,34 +587,41 @@ addEventListener("scroll",()=>{const h=document.documentElement;
   $("#progress").style.width=(h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+"%"});
 addEventListener("mousemove",e=>{const g=$("#glow");g.style.left=e.clientX+"px";g.style.top=e.clientY+"px"});
 
-/* message wall */
+/* message wall: shared through the db capability when the viewer has it, otherwise saved on this device */
+/* ==== SHARED WALL SETUP ====
+   Paste your Firebase Realtime Database URL between the quotes, for example
+   "https://concordia-2025-default-rtdb.firebaseio.com"
+   Leave it empty and memories are saved only in each visitor's own browser. */
+const FIREBASE_URL="https://concordia-2025-default-rtdb.firebaseio.com";
 const KEY="concordia2025_wall_v3";
-const now=Date.now(),H=36e5;
-const seed=[];
-let notes;try{notes=JSON.parse(localStorage.getItem(KEY))}catch(e){}
-if(!Array.isArray(notes))notes=seed.slice();
-let liked;try{liked=JSON.parse(localStorage.getItem(KEY+"_liked"))||{}}catch(e){liked={}}
-let mine;try{mine=JSON.parse(localStorage.getItem(KEY+"_mine"))||{}}catch(e){mine={}}
-let sortBy="new",mood="💚",colour="mint",justAdded=null;
-const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(notes));localStorage.setItem(KEY+"_liked",JSON.stringify(liked));localStorage.setItem(KEY+"_mine",JSON.stringify(mine))}catch(_){}};
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-function ago(t){const s=(Date.now()-t)/1000;if(s<45)return"just now";if(s<3600)return Math.round(s/60)+" min ago";if(s<86400)return Math.round(s/3600)+" h ago";return Math.round(s/86400)+" d ago"}
+const COLOURS=["mint","sun","sky","rose"];
+let notes=[],liked={},mine={},sortBy="new",mood="💚",colour="mint",justAdded=null,bumpId=null;
+let db=null,col=null,uid=null,loading=true,busy={};
+function lsGet(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v==null?d:v}catch(e){return d}}
+function lsSave(){try{localStorage.setItem(KEY,JSON.stringify(notes));localStorage.setItem(KEY+"_liked",JSON.stringify(liked));localStorage.setItem(KEY+"_mine",JSON.stringify(mine))}catch(_){}}
+const isLiked=x=>db?!!x.lk:!!liked[x.id];
+const isMine=x=>db?(!!uid&&x.by===uid):!!mine[x.id];
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function ago(t){const s=(Date.now()-t)/1000;if(!(s>=0))return"just now";if(s<45)return"just now";if(s<3600)return Math.round(s/60)+" min ago";if(s<86400)return Math.round(s/3600)+" h ago";return Math.round(s/86400)+" d ago"}
+function setMode(){$("#mode").textContent=db?"Shared wall: everyone who opens this page sees these memories.":"Saved on this device only."}
 function drawNotes(){
+  const box=$("#notes"),keep=box.scrollTop;
   const list=notes.slice().sort((a,b)=>sortBy==="top"?(b.l-a.l)||(b.t-a.t):b.t-a.t);
   $("#total").textContent=notes.length;
-  $("#notes").innerHTML=list.length?list.map(x=>`<div class="note ${x.c||"mint"} ${x.id===justAdded?"drop":""}" data-id="${x.id}">
-    <span class="pin">📌</span><span class="mood">${x.e||"💚"}</span>
+  if(loading){box.innerHTML='<div class="empty">Loading memories…</div>';return}
+  box.innerHTML=list.length?list.map(x=>{const c=COLOURS.includes(x.c)?x.c:"mint";return `<div class="note ${c} ${x.id===justAdded?"drop":""}" data-id="${esc(x.id)}">
+    <span class="pin">📌</span><span class="mood">${esc(x.e||"💚")}</span>
     <p>“${esc(x.m)}”</p><b>— ${esc(x.n)}</b><time>${ago(x.t)}</time>
-    <div class="acts"><button class="react ${liked[x.id]?"liked":""}" data-act="like" aria-label="Love this memory">💚 <span>${x.l||0}</span></button>
-    ${mine[x.id]?`<button class="del" data-act="del" title="Remove my note">🗑️</button>`:""}</div></div>`).join(""):`<div class="empty">No memories yet — be the first to pin one! 💚</div>`;
-  justAdded=null;
+    <div class="acts"><button class="react ${isLiked(x)?"liked":""} ${x.id===bumpId?"bump":""}" data-act="like" aria-label="Love this memory">💚 <span>${x.l||0}</span></button>
+    ${isMine(x)?`<button class="del" data-act="del" title="Remove my note">🗑️</button>`:""}</div></div>`}).join(""):`<div class="empty">No memories yet. Be the first to pin one! 💚</div>`;
+  justAdded=null;bumpId=null;box.scrollTop=keep;
 }
 function floatEmoji(el,em,n=6){const r=el.getBoundingClientRect();
   for(let i=0;i<n;i++){const f=document.createElement("span");f.className="floaty";f.textContent=em;
     f.style.left=(r.left+r.width/2+(Math.random()*40-20))+"px";f.style.top=(r.top+r.height/2)+"px";
     f.style.setProperty("--dx",(Math.random()*120-60)+"px");f.style.animationDelay=(i*.06)+"s";
     document.body.appendChild(f);setTimeout(()=>f.remove(),1500)}}
-let tt;function toast(t){const e=$("#toast");e.textContent=t;e.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>e.classList.remove("show"),2600)}
+let tt;function toast(t){const e=$("#toast");e.textContent=t;e.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>e.classList.remove("show"),2800)}
 
 /* composer: live preview, counter, mood, colour, idea chips */
 function updatePreview(){
@@ -631,32 +641,97 @@ $("#sort").addEventListener("click",e=>{const b=e.target.closest("button");if(!b
   [...$("#sort").children].forEach(x=>x.classList.toggle("on",x===b));sortBy=b.dataset.s;drawNotes()});
 
 /* board: like + delete */
-$("#notes").addEventListener("click",e=>{
+$("#notes").addEventListener("click",async e=>{
   const b=e.target.closest("[data-act]");if(!b)return;
-  const card=b.closest(".note"),id=card.dataset.id,n=notes.find(x=>x.id===id);if(!n)return;
+  const card=b.closest(".note"),id=card.dataset.id,n=notes.find(x=>x.id===id);if(!n||busy[id])return;
   if(b.dataset.act==="like"){
-    if(liked[id]){liked[id]=false;n.l=Math.max(0,(n.l||0)-1)}
-    else{liked[id]=true;n.l=(n.l||0)+1;floatEmoji(b,"💚",7)}
-    save();b.classList.toggle("liked",!!liked[id]);b.querySelector("span").textContent=n.l;
-    b.classList.remove("bump");void b.offsetWidth;b.classList.add("bump");
+    const was=isLiked(n);if(!was)floatEmoji(b,"💚",7);
+    busy[id]=true;
+    try{
+      if(db){await col.doc(id).update({likedBy:{[uid]:!was}})}
+      else{liked[id]=!was;n.l=Math.max(0,(n.l||0)+(was?-1:1));lsSave();bumpId=id;drawNotes()}
+    }catch(err){toast("Could not save your reaction. Please try again.")}
+    busy[id]=false;
   }else if(b.dataset.act==="del"){
-    card.classList.add("out");setTimeout(()=>{notes=notes.filter(x=>x.id!==id);delete mine[id];save();drawNotes();toast("Your note was removed")},330);
+    card.classList.add("out");busy[id]=true;
+    try{
+      await new Promise(r=>setTimeout(r,320));
+      if(db){await col.doc(id).delete()}
+      else{notes=notes.filter(x=>x.id!==id);delete mine[id];lsSave();drawNotes()}
+      toast("Your note was removed");
+    }catch(err){card.classList.remove("out");toast("Could not remove the note. Please try again.")}
+    busy[id]=false;
   }});
 
-function pin(){
+let posting=false;
+async function pin(){
+  if(posting)return;
   const who=$("#who"),msg=$("#msg");
   const bad=!who.value.trim()?who:(!msg.value.trim()?msg:null);
   if(bad){bad.focus();bad.classList.remove("shake");void bad.offsetWidth;bad.classList.add("shake");toast(bad===who?"Please enter your name":"Please write your memory first");return}
-  const id="n"+Date.now();
-  notes.unshift({id,n:who.value.trim(),m:msg.value.trim(),e:mood,c:colour,t:Date.now(),l:0});
-  mine[id]=true;justAdded=id;sortBy="new";[...$("#sort").children].forEach(x=>x.classList.toggle("on",x.dataset.s==="new"));
-  save();drawNotes();$("#notes").scrollTo({top:0,behavior:"smooth"});
-  who.value="";msg.value="";updatePreview();burst();toast("Pinned to the wall! Thank you 💚");
-  $("#wall .board").scrollIntoView({behavior:"smooth",block:"center"});}
+  if(loading){toast("Still connecting to the wall. Try again in a moment.");return}
+  posting=true;$("#pinBtn").disabled=true;
+  const body={n:who.value.trim().slice(0,40),m:msg.value.trim().slice(0,300),e:mood,c:colour,t:Date.now()};
+  try{
+    if(db){const ref=col.doc();justAdded=ref.id;await ref.set({...body,by:uid,likedBy:{}})}
+    else{const id="n"+Date.now();notes.unshift({...body,id,l:0});mine[id]=true;justAdded=id;lsSave();drawNotes()}
+    sortBy="new";[...$("#sort").children].forEach(x=>x.classList.toggle("on",x.dataset.s==="new"));
+    $("#notes").scrollTo({top:0,behavior:"smooth"});
+    who.value="";msg.value="";updatePreview();burst();toast("Pinned to the wall! Thank you 💚");
+    $("#wall .board").scrollIntoView({behavior:"smooth",block:"center"});
+  }catch(err){
+    justAdded=null;
+    toast(err&&err.code==="quota_exceeded"?"The wall is full right now.":"Could not pin your memory. Please try again.");
+  }
+  posting=false;$("#pinBtn").disabled=false;
+}
 $("#pinBtn").addEventListener("click",pin);
 $("#who").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();pin()}});
 $("#msg").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();pin()}});
-drawNotes();updatePreview();$("#preview").classList.remove("typing");
+
+function toNote(d){const x=d.data()||{},lb=x.likedBy||{};
+  return{id:d.id,n:x.n,m:x.m,e:x.e,c:x.c,t:+x.t||0,by:x.by,l:Object.values(lb).filter(Boolean).length,lk:!!(uid&&lb[uid])}}
+function useLocal(){db=null;col=null;notes=lsGet(KEY,[]);liked=lsGet(KEY+"_liked",{});mine=lsGet(KEY+"_mine",{});loading=false;setMode();drawNotes()}
+function loadScript(src){return new Promise((ok,no)=>{const s=document.createElement("script");s.src=src;s.onload=ok;s.onerror=()=>no(new Error("load "+src));document.head.appendChild(s)})}
+async function loadFirebase(){
+  if(!window.firebase){
+    const v="10.12.2",base="https://www.gstatic.com/firebasejs/"+v+"/";
+    await loadScript(base+"firebase-app-compat.js");await loadScript(base+"firebase-database-compat.js");
+  }
+  const app=firebase.apps&&firebase.apps.length?firebase.app():firebase.initializeApp({databaseURL:FIREBASE_URL});
+  return app.database().ref("memories");
+}
+/* adapter that gives a Firebase list the same small API as the Claude db collection */
+function fbCollection(ref){
+  const flat=(o,pre,out)=>{for(const k in o){const v=o[k];if(v&&typeof v==="object")flat(v,pre+k+"/",out);else out[pre+k]=v}return out};
+  const api={
+    orderBy(){return api},limit(){return api},
+    onSnapshot(next,err){
+      const h=s=>{const v=s.val()||{};
+        next({docs:Object.keys(v).map(id=>({id,data:()=>v[id]}))})};
+      ref.on("value",h,e=>err&&err(e));
+      return()=>ref.off("value",h)},
+    doc(id){const key=id||ref.push().key,r=ref.child(key);
+      return{id:key,set:d=>r.set(d),update:d=>r.update(flat(d,"",{})),delete:()=>r.remove()}}
+  };
+  return api}
+async function getBackend(){
+  if(window.claude&&window.claude.use){
+    try{const d=await window.claude.use("db");
+      if(d){const u=await window.claude.use("user");return{col:d.collection("memories"),uid:u?await u.id():null}}}catch(e){}
+  }
+  if(FIREBASE_URL){try{return{col:fbCollection(await loadFirebase()),uid:null}}catch(e){}}
+  return null;
+}
+async function init(){
+  drawNotes();updatePreview();$("#preview").classList.remove("typing");
+  const be=await getBackend();
+  if(!be){useLocal();return}
+  db=true;col=be.col;uid=be.uid;
+  if(!uid){uid=lsGet(KEY+"_uid",null)||("g"+Math.random().toString(36).slice(2,12));try{localStorage.setItem(KEY+"_uid",JSON.stringify(uid))}catch(_){}}
+  col.orderBy("t","desc").limit(500).onSnapshot(snap=>{notes=snap.docs.map(toNote);loading=false;setMode();drawNotes()},()=>useLocal());
+}
+init();
 setInterval(()=>{document.querySelectorAll(".note[data-id] time").forEach(t=>{const n=notes.find(x=>x.id===t.closest(".note").dataset.id);if(n)t.textContent=ago(n.t)})},30000);
 
 /* confetti */
